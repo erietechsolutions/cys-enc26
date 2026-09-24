@@ -10,13 +10,13 @@ every phase does to your data, in both directions. Built for Fedora Linux.
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR-GITHUB-USERNAME/cys-enc26/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/erietechsolutions/cys-enc26/main/install.sh | bash
 ```
 
 Or from a downloaded copy:
 
 ```bash
-git clone https://github.com/YOUR-GITHUB-USERNAME/cys-enc26.git
+git clone https://github.com/erietechsolutions/cys-enc26.git
 cd cys-enc26
 ./install.sh
 ```

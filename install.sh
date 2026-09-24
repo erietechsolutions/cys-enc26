@@ -2,10 +2,10 @@
 # Installs or updates CYS-ENC26 for the current user.
 #
 #   From a downloaded copy:  ./install.sh
-#   In one line:             curl -fsSL https://raw.githubusercontent.com/YOUR-GITHUB-USERNAME/cys-enc26/main/install.sh | bash
+#   In one line:             curl -fsSL https://raw.githubusercontent.com/erietechsolutions/cys-enc26/main/install.sh | bash
 set -euo pipefail
 
-REPO="YOUR-GITHUB-USERNAME/cys-enc26"
+REPO="erietechsolutions/cys-enc26"
 BRANCH="main"
 QUIET=0
 [ "${1:-}" = "--quiet" ] && QUIET=1
