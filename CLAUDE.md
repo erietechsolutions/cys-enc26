@@ -5,7 +5,8 @@ project, plus a Tkinter desktop app for Fedora Linux that shows the output of
 every phase when encrypting and decrypting. It is not meant to protect real
 secrets (AES-256-GCM or ChaCha20-Poly1305 are the right tools for that).
 
-Current version: see `VERSION` (1.0.0.0 at handoff, tagged `v1.0.0.0`).
+Current version: see `VERSION` (1.0.0.0 at handoff, tagged `v1.0.0.0`; 2.0.0.0 adds
+Phases 8.5 and 10, Phase 9 block sizes and multi-part files).
 
 ## How the spec is written
 
@@ -19,7 +20,7 @@ THE LETTER I IS DIFFERENT
 I = 111111
 ```
 
-## Current spec (all phases reversible, with or without Phase 9)
+## Current spec (all phases reversible, whichever optional phases are used)
 
 ```
 PHASE 0: KEY AND WATERMARK
@@ -75,16 +76,49 @@ EVERY BINARY CODE BECOMES A 2-DIGIT NUMBER
 PHASE 1 4-BIT CODES ADD 64 SO THEY CAN'T COLLIDE
 - = 73   + = 74   | = 75   = = 76   _ = 79
 
+PHASE 8.5: COMPRESSION
+PHASE 8 OUTPUT AS UTF-8 BYTES
+COMPRESSED WITH RAW LZMA2, PRESET 6, NO HEADER
+DECRYPTOR: FIRST BYTE 1, 2 OR 128+ IS LZMA2
+A CAPITAL LETTER MEANS UNCOMPRESSED VERSION 1 PHASE 8 OUTPUT
+
 PHASE 9 (OPTIONAL): FINALIZED ENCODING
-PHASE 8 OUTPUT AS UTF-8 BYTES, 4-BYTE BIG-ENDIAN LENGTH PREFIX,
-RANDOM PADDING UP TO THE NEXT 128-BYTE (1024-BIT) BLOCK
-RANDOM 16-BYTE NONCE PER MESSAGE
+PHASE 8.5 OUTPUT, 4-BYTE BIG-ENDIAN LENGTH PREFIX,
+RANDOM PADDING UP TO THE NEXT BLOCK
+BLOCK SIZE CHOSEN BY THE USER
+64 1024 2048 8192 16384 131072 524288 1048576 BITS, DEFAULT 1024
+524288 AND 1048576 SHOW A SIZE WARNING
+RANDOM 16-BYTE NONCE PER MESSAGE OR PART
 GENERATOR: HMAC-SHA256(KEY, LABEL + NONCE + 8-BYTE BIG-ENDIAN COUNTER)
 FISHER-YATES SHUFFLE OF BYTE POSITIONS (LABEL "CYS-ENC26 shuffle",
 LITTLE-ENDIAN UINT32 WORDS, REJECTION SAMPLING)
 THEN XOR WITH A SECOND STREAM (LABEL "CYS-ENC26 xor")
-OUTPUT: BASE64(NONCE + DATA), NO READABLE HEADER
-DECRYPTOR RECOGNISES PHASE 9 BY ITS SHAPE, FALLS BACK TO PLAIN PHASE 8
+OUTPUT: NONCE + DATA, NO READABLE HEADER
+BLOCK SIZE IS NOT STORED: THE LENGTH PREFIX SAYS WHERE THE DATA ENDS
+DECRYPTOR RECOGNISES PHASE 9 BY ITS SHAPE (BODY A MULTIPLE OF 8 BYTES)
+
+PHASE 10 (OPTIONAL): BINARY
+EVERY BYTE WRITTEN AS 8 BITS
+GROUPS SEPARATED BY A SPACE, 8 GROUPS (64 BITS) PER LINE
+A = 01000001
+COMPACT SAVE (OPTIONAL): THE SAVED FILE STORES THE BYTES INSTEAD
+
+TEXT OUTPUT
+PHASE 10 BINARY IF USED, OTHERWISE BASE64
+```
+
+## File format (version 2)
+
+```
+FILES ARE SPLIT INTO 512 KB PARTS
+EACH PART: FILEPART|<PART>|<PARTS>| + BASE32(DATA)
+PART 0 DATA STARTS WITH THE FILE NAME AND A NUL BYTE
+EACH PART RUNS THROUGH PHASES 0-10 ON ITS OWN
+PHASE 2 POSITIONS: HMAC(KEY, "CYS-ENC26 inject" + LENGTH + PART NUMBER)
+LOCKED FILE: EACH PART AS 4-BYTE BIG-ENDIAN LENGTH + BYTES
+PHASE 10 WITHOUT COMPACT SAVE: EACH PART AS BINARY TEXT, BLANK LINE BETWEEN
+TYPED MESSAGES: ONE PART (PART 0), SAVED AS TEXT UNLESS COMPACT SAVE
+LIMITS: 800 MB, 90 MB WITH PHASE 10 AND NO COMPACT SAVE, BYPASS WITH A WARNING
 ```
 
 ## Implementation decisions
@@ -95,10 +129,16 @@ DECRYPTOR RECOGNISES PHASE 9 BY ITS SHAPE, FALLS BACK TO PLAIN PHASE 8
 - Phase 2 injection positions come from HMAC-SHA256(key, "CYS-ENC26 inject" +
   total length) with rejection sampling. The injected characters double as a
   wrong-key check during decryption.
-- Files are encrypted as `FILE|` + base32(filename + NUL byte + file bytes), so
-  they come back byte for byte. Encrypted files export as
-  `<name>.locked.rl.cys`. File limit is 2 MB (data grows about 11x; a 2 MB file
-  takes about 30 seconds and 1 GB of RAM).
+- Version 1 files were `FILE|` + base32(filename + NUL byte + file bytes) in
+  one piece, with Phase 2 positions from the length only. Version 2 decrypts
+  them (and version 1 messages) by trying the version 1 rules when the
+  version 2 ones don't fit; `tests/fixtures/v1-ciphertexts.json` holds real
+  1.0.0.0 ciphertexts.
+- Parts run on up to 8 processes (spawn start method), about 130 MB of
+  memory each. Encrypting is about 12.5 s per MB on one core, most of it LZMA
+  preset 6; lower presets are much faster but miss the 1.5 GB goal.
+- The GUI streams files through `~/.cache/cys-enc26/work/<pid>/` and moves the
+  result on Save. Cancel or a failure deletes the partial file.
 - Typed messages come back in capitals because Phase 1 uppercases.
 - Symbols without a code (for example `/`, `'`, newline) pass through
   unencrypted. There are unused 6-bit codes available for more symbols.
@@ -115,6 +155,7 @@ install.sh            user install to ~/.local/share/cys-enc26, links ~/.local/b
 uninstall.sh
 bin/cys26             CLI: enc, dec, update, version, uninstall
 src/cys_enc26.py      engine + Tkinter GUI (--mode encrypt|decrypt)
+tests/                unittest round trips, version 1 fixtures
 assets/cys-enc26.svg
 tools/set-repo.sh     sets GitHub username everywhere + git remote
 tools/bump-version.sh major|minor|patch|build "note": bumps VERSION,
@@ -138,20 +179,33 @@ Otherwise it prints "CYS-ENC26 is already up to date (version X)".
 
 ## Testing
 
+```bash
+python3 -m unittest discover -s tests
+```
+
 The engine can be driven without the GUI:
 
 ```python
 import cys_enc26 as c
 key = c.generate_key()
-ct = c.encrypt(key, use_phase9=True, text="HELLO")[10].output
-phases, result = c.decrypt(ct, key)   # result["text"], or result["name"]/["data"] for files
+opts = c.Options(use_phase9=True, block_bits=1024, use_phase10=False, compact=False)
+ct = c.encrypt(key, "HELLO", opts)["final"].output
+phases, result = c.decrypt(ct, key)          # result["text"]
+ph, locked = c.encrypt_bytes(key, "a.bin", data, opts)
+phases, result = c.decrypt_bytes(key, locked)  # result["name"], result["data"]
 ```
+
+Phase results are keyed "0" to "8", "8.5", "9", "10" and "final". Worker
+processes use spawn, so scripts that call the engine with more than one
+worker need an `if __name__ == "__main__":` guard.
 
 Testing done before 1.0.0.0: 3,000 random text round trips (with and without
 Phase 9), each phase's recovered output matching encryption; 400 random binary
 file round trips plus a full GUI flow; installer, `cys26 version`,
 `cys26 update` (against a simulated GitHub server) and `cys26 dec` window
-launch.
+launch. For 2.0.0.0: the unittest suite, plus a headless GUI run (Xvfb)
+covering messages, multi-part files, Phase 10, compact save, block size and
+bypass warnings, cancel and version 1 files.
 
 ## Working in the Claude project copy
 
@@ -163,9 +217,7 @@ committed modes and SVG in history are the correct ones.
 
 ## Next steps
 
-1. Push to GitHub: create an empty public repo `cys-enc26`, then run
-   `./tools/set-repo.sh <username>` and `git push -u origin main --tags`.
-2. Install with
-   `curl -fsSL https://raw.githubusercontent.com/<username>/cys-enc26/main/install.sh | bash`.
-3. Possible improvements: codes for more symbols, lowercase support for typed
-   messages, faster handling of large files.
+- Tags can't be pushed from Claude's cloud sessions; push them from a local
+  checkout after merging (`git tag -a vX.X.X.X <commit> -m "Version X.X.X.X"`).
+- Possible improvements: codes for more symbols, lowercase support for typed
+  messages, faster phases (Phase 6 and LZMA are the slow parts).
