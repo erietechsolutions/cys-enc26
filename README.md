@@ -38,17 +38,32 @@ command to `~/.local/bin`, adds an app menu entry, and installs
 ## Using the app
 
 **Encrypting.** Type a message or use *Open file…*. Leave the key empty to
-create a new one, and use *Save…* next to the key to keep it. Select
-*Encrypt*, then *Save locked file…* to export a `.locked.rl.cys` file.
+create a new one, and use *Save…* next to the key to keep it. Pick the
+options you want, select *Encrypt*, then *Save locked file…* to export a
+`.locked.rl.cys` file.
+
+| Option | What it does |
+|---|---|
+| Use Phase 9, block size | Keyed shuffle and XOR, padded to the chosen block size. 524288 and 1048576 bits ask first, because even a one-word message becomes about 87 KB or 175 KB. |
+| Use Phase 10 | Writes the output as 8-bit binary groups, 8 to a line. |
+| Compact save | With Phase 10, packs the bits back into bytes in the saved file, so it's 9 times smaller. The window still shows the binary. |
+| Allow files over the size limit | Lets bigger files through after a warning about size, time and disk space. |
 
 **Decrypting.** Paste the ciphertext or open a `.locked.rl.cys` file, enter
-the same key, and select *Decrypt*. Files come back exactly as they were, with
-their original name; use *Save original file…*. Typed messages come back in
-capitals.
+the same key, and select *Decrypt*. There's nothing to pick: the phases that
+were used are recognised from the ciphertext. Files come back exactly as they
+were, with their original name; use *Save original file…*. Typed messages
+come back in capitals. Locked files made by version 1.0.0.0 still decrypt.
 
 Select any phase in the list to see its output and notes. *Save report…*
-writes every phase to one text file. Files can be up to 2 MB, because the
-phases grow data about 11 times.
+writes every phase to one text file.
+
+**File sizes.** Files are encrypted in 512 KB parts on up to 8 CPU cores, with
+a progress bar and *Cancel*. A locked file is about 1.75 times the original
+(about 16 times with Phase 10 and no compact save). To keep locked files under
+about 1.5 GB, the limit is 800 MB, or 90 MB with Phase 10 and no compact save.
+Encrypting takes about 12 seconds per MB on one core. For big files the phase
+view shows part 1, since every part goes through the same phases.
 
 ## The phases
 
@@ -63,9 +78,18 @@ phases grow data about 11 times.
 | 6 | Digits become random letters (1=B/C, 2=F/G, 3=H/I, 4=J/K, 5=L/M, 6=N/O, 7=P/Q, 8=R/S, 9=T/U, 0=V/W/Y/Z); symbols become 6-bit codes |
 | 7 | Letters shift forward one (Z→A); I becomes 111111 |
 | 8 | Binary codes become 2-digit numbers; 4-bit codes from Phase 1 add 64 |
-| 9 | Optional: keyed shuffle and XOR in 1024-bit blocks (HMAC-SHA256 generator) |
+| 8.5 | The Phase 8 output is compressed (LZMA2, no header) |
+| 9 | Optional: keyed shuffle and XOR, padded to 64 to 1048576-bit blocks (HMAC-SHA256 generator) |
+| 10 | Optional: every byte written as 8 bits, 8 groups per line |
 
-Files are converted to base32 text before Phase 0 so every byte survives.
+Files are split into 512 KB parts, and each part is converted to base32 text
+before Phase 0 so every byte survives.
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests
+```
 
 ## Versions and updates
 
