@@ -7,6 +7,14 @@ every phase does to your data, in both directions. Built for Fedora Linux.
 > so don't rely on it to protect real secrets. Use AES-256-GCM or
 > ChaCha20-Poly1305 for that.
 
+> **Phase 9 is the only step that uses the key to hide your data.** Phases 1
+> to 8.5 are fixed substitutions and compression that anyone can run
+> backwards, so with Phase 9 off a message can be read without the key, and
+> the key's first and last byte (injected in Phase 2) can be read too. Phase 9
+> is on by default; leave it on. There's also no tamper check: a changed
+> ciphertext is usually rejected because it no longer decodes, but nothing
+> guarantees that.
+
 ## Install
 
 ```bash
@@ -38,13 +46,15 @@ command to `~/.local/bin`, adds an app menu entry, and installs
 ## Using the app
 
 **Encrypting.** Type a message or use *Open file…*. Leave the key empty to
-create a new one, and use *Save…* next to the key to keep it. Pick the
+create a new one, and use *Save…* next to the key to keep it. Key files are
+saved as plain text with your normal file permissions, so keep them somewhere
+private (`chmod 600 cys-enc26.key` makes one readable only by you). Pick the
 options you want, select *Encrypt*, then *Save locked file…* to export a
 `.locked.rl.cys` file.
 
 | Option | What it does |
 |---|---|
-| Use Phase 9, block size | Keyed shuffle and XOR, padded to the chosen block size. 524288 and 1048576 bits ask first, because even a one-word message becomes about 87 KB or 175 KB. |
+| Use Phase 9, block size | On by default. Keyed shuffle and XOR, padded to the chosen block size. Without it, anyone can undo the other phases without the key. 524288 and 1048576 bits ask first, because even a one-word message becomes about 87 KB or 175 KB. |
 | Use Phase 10 | Writes the output as 8-bit binary groups, 8 to a line. |
 | Compact save | With Phase 10, packs the bits back into bytes in the saved file, so it's 9 times smaller. The window still shows the binary. |
 | Allow files over the size limit | Lets bigger files through after a warning about size, time and disk space. |

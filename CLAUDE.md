@@ -5,8 +5,8 @@ project, plus a Tkinter desktop app for Fedora Linux that shows the output of
 every phase when encrypting and decrypting. It is not meant to protect real
 secrets (AES-256-GCM or ChaCha20-Poly1305 are the right tools for that).
 
-Current version: see `VERSION` (1.0.0.0 at handoff, tagged `v1.0.0.0`; 2.0.0.0 adds
-Phases 8.5 and 10, Phase 9 block sizes and multi-part files).
+Current version: see `VERSION` (2.0.0.0; 1.0.0.0 was tagged `v1.0.0.0`. 2.0.0.0
+added Phases 8.5 and 10, Phase 9 block sizes and multi-part files).
 
 ## How the spec is written
 
@@ -127,8 +127,14 @@ LIMITS: 800 MB, 90 MB WITH PHASE 10 AND NO COMPACT SAVE, BYPASS WITH A WARNING
   (U+E000-U+E03F) so no phase treats their 0s and 1s as digits; they're
   displayed as binary. Messages containing those characters are rejected.
 - Phase 2 injection positions come from HMAC-SHA256(key, "CYS-ENC26 inject" +
-  total length) with rejection sampling. The injected characters double as a
-  wrong-key check during decryption.
+  total length + part number) with rejection sampling (version 1: total length
+  only). The injected characters double as a wrong-key check during decryption.
+- Phase 9 is the only step that hides data with the key. Phases 1 to 8.5 are
+  keyless and reversible by anyone, so without Phase 9 the plaintext can be
+  read without the key, and the first and last key byte are readable too (the
+  key only picks the Phase 2 positions, and the watermark shows where they
+  are). Phase 9 is HMAC-SHA256 in counter mode plus a keyed shuffle, with no
+  MAC, so tampering is only caught when the result no longer decodes.
 - Version 1 files were `FILE|` + base32(filename + NUL byte + file bytes) in
   one piece, with Phase 2 positions from the length only. Version 2 decrypts
   them (and version 1 messages) by trying the version 1 rules when the
@@ -141,7 +147,8 @@ LIMITS: 800 MB, 90 MB WITH PHASE 10 AND NO COMPACT SAVE, BYPASS WITH A WARNING
   result on Save. Cancel or a failure deletes the partial file.
 - Typed messages come back in capitals because Phase 1 uppercases.
 - Symbols without a code (for example `/`, `'`, newline) pass through
-  unencrypted. There are unused 6-bit codes available for more symbols.
+  Phases 1 to 8 unchanged (Phase 9, when used, still hides them). There are
+  unused 6-bit codes available for more symbols.
 
 ## Repository layout
 
@@ -149,7 +156,7 @@ LIMITS: 800 MB, 90 MB WITH PHASE 10 AND NO COMPACT SAVE, BYPASS WITH A WARNING
 VERSION               current version
 CHANGELOG.md
 README.md
-cys26.conf            REPO="YOUR-GITHUB-USERNAME/cys-enc26", BRANCH="main"
+cys26.conf            REPO="erietechsolutions/cys-enc26", BRANCH="main"
 install.sh            user install to ~/.local/share/cys-enc26, links ~/.local/bin/cys26,
                       app menu entry, installs python3-tkinter if missing
 uninstall.sh
@@ -157,9 +164,11 @@ bin/cys26             CLI: enc, dec, update, version, uninstall
 src/cys_enc26.py      engine + Tkinter GUI (--mode encrypt|decrypt)
 tests/                unittest round trips, version 1 fixtures
 assets/cys-enc26.svg
-tools/set-repo.sh     sets GitHub username everywhere + git remote
+tools/set-repo.sh     sets GitHub username everywhere + git remote (already
+                      run: the repo is erietechsolutions/cys-enc26)
 tools/bump-version.sh major|minor|patch|build "note": bumps VERSION,
-                      updates CHANGELOG, commits, tags vX.X.X.X
+                      updates CHANGELOG, commits (git add -A, so everything
+                      untracked too), tags vX.X.X.X
 ```
 
 `cys26 update` reads `VERSION` from
@@ -219,5 +228,13 @@ committed modes and SVG in history are the correct ones.
 
 - Tags can't be pushed from Claude's cloud sessions; push them from a local
   checkout after merging (`git tag -a vX.X.X.X <commit> -m "Version X.X.X.X"`).
+- Known issues (from the 2026-09-24 review):
+  - A typed message that starts with `FILEPART|` encrypts but won't decrypt,
+    because the decryptor reads it as a file part.
+  - Key files are written with the default umask (usually 0644).
+  - Phase 9 can be switched off, which leaves the ciphertext readable without
+    the key (see Implementation decisions).
+  - `cys26 update` and the one-line installer run whatever is on `main` with
+    no signature check.
 - Possible improvements: codes for more symbols, lowercase support for typed
   messages, faster phases (Phase 6 and LZMA are the slow parts).
