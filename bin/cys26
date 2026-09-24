@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# cys26: command-line entry point for CYS-ENC26.
+set -u
+
+APP_DIR="${CYS26_HOME:-$HOME/.local/share/cys-enc26}"
+LOG_DIR="$HOME/.cache/cys-enc26"
+REPO=""
+BRANCH="main"
+# shellcheck source=/dev/null
+[ -f "$APP_DIR/cys26.conf" ] && . "$APP_DIR/cys26.conf"
+VERSION="$(tr -d '[:space:]' < "$APP_DIR/VERSION" 2>/dev/null || echo unknown)"
+
+usage() {
+    cat <<USAGE
+CYS-ENC26 $VERSION
+
+Usage:
+  cys26 enc        Open the encryption window
+  cys26 dec        Open the decryption window
+  cys26 update     Check GitHub for a newer version and install it
+  cys26 version    Show the installed version
+  cys26 uninstall  Remove CYS-ENC26
+USAGE
+}
+
+launch() {
+    if ! python3 -c "import tkinter" >/dev/null 2>&1; then
+        echo "CYS-ENC26 needs python3-tkinter. Install it with:" >&2
+        echo "  sudo dnf install python3-tkinter" >&2
+        exit 1
+    fi
+    mkdir -p "$LOG_DIR"
+    setsid python3 "$APP_DIR/src/cys_enc26.py" --mode "$1" \
+        >"$LOG_DIR/last-run.log" 2>&1 </dev/null &
+    local pid=$!
+    sleep 1
+    if ! kill -0 "$pid" 2>/dev/null; then
+        wait "$pid"
+        echo "CYS-ENC26 couldn't open its window:" >&2
+        cat "$LOG_DIR/last-run.log" >&2
+        exit 1
+    fi
+}
+
+is_newer() {  # is $1 newer than $2?
+    [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" = "$1" ]
+}
+
+update() {
+    if [ -z "$REPO" ] || [[ "$REPO" == YOUR-GITHUB-USERNAME/* ]]; then
+        echo "No GitHub repository is set for updates."
+        echo "Set REPO in $APP_DIR/cys26.conf (for example: REPO=\"yourname/cys-enc26\")."
+        exit 1
+    fi
+    for tool in curl tar; do
+        command -v "$tool" >/dev/null 2>&1 || { echo "cys26 update needs $tool."; exit 1; }
+    done
+
+    echo "Checking github.com/$REPO for updates..."
+    local latest
+    if ! latest="$(curl -fsSL "https://raw.githubusercontent.com/$REPO/$BRANCH/VERSION")"; then
+        echo "Couldn't reach GitHub. Check your connection and that the repository is public."
+        exit 1
+    fi
+    latest="$(printf '%s' "$latest" | tr -d '[:space:]')"
+    if ! [[ "$latest" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "The VERSION file on GitHub isn't in the form 1.0.0.0 (found: $latest)."
+        exit 1
+    fi
+
+    if is_newer "$latest" "$VERSION"; then
+        echo "Updating CYS-ENC26 from $VERSION to $latest..."
+        UPDATE_TMP="$(mktemp -d)"
+        trap 'rm -rf "$UPDATE_TMP"' EXIT
+        if ! curl -fsSL "https://github.com/$REPO/archive/refs/heads/$BRANCH.tar.gz" \
+                | tar -xz -C "$UPDATE_TMP" --strip-components=1; then
+            echo "The download failed. Nothing was changed."
+            exit 1
+        fi
+        bash "$UPDATE_TMP/install.sh" --quiet
+        echo "CYS-ENC26 was updated to version $latest."
+    else
+        echo "CYS-ENC26 is already up to date (version $VERSION)."
+    fi
+}
+
+case "${1:-}" in
+    enc|encrypt)          launch encrypt ;;
+    dec|decrypt)          launch decrypt ;;
+    update)               update ;;
+    version|-v|--version) echo "CYS-ENC26 $VERSION" ;;
+    uninstall)            exec bash "$APP_DIR/uninstall.sh" ;;
+    ""|help|-h|--help)    usage ;;
+    *)                    echo "Unknown command: $1"; echo; usage; exit 1 ;;
+esac
