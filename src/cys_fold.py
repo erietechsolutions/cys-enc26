@@ -24,6 +24,7 @@ import string
 import sys
 import tarfile
 import tempfile
+import threading
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -243,13 +244,6 @@ def lock_folder(path, password, selfdestruct=None, opts=None,
         if tmp_tar and os.path.exists(tmp_tar):
             os.remove(tmp_tar)
 
-    # The locked file exists now; remove the original.
-    if is_folder:
-        import shutil
-        shutil.rmtree(path)
-    else:
-        os.remove(path)
-
     rec = {
         "version": RECORD_VERSION,
         "id": new_id(),
@@ -272,7 +266,19 @@ def lock_folder(path, password, selfdestruct=None, opts=None,
         sd_hash, _ = derive(selfdestruct, sd_salt)
         rec["selfdestruct_salt"] = sd_salt.hex()
         rec["selfdestruct_check"] = _check(sd_hash, DESTRUCT_LABEL)
+
+    # Write the record (which holds the salt, the only way to derive the key
+    # from the password) BEFORE removing the original. If anything interrupts
+    # us after this, the .f.cys26 can still be opened. The worst leftover is a
+    # copy of the original alongside a valid lock, which the recovery scan and
+    # unlock handle, never a .f.cys26 whose salt was never saved.
     write_record(rec)
+
+    if is_folder:
+        import shutil
+        shutil.rmtree(path)
+    else:
+        os.remove(path)
     return rec
 
 
@@ -337,14 +343,14 @@ def _prune_fails(fails, now=None):
     return kept
 
 
-def register_wrong_try(rec):
+def register_wrong_try(rec, progress=None, cancel=None):
     """Record one wrong try. If it reaches the limit inside the window, run the
     lockout re-encryption. Returns (locked_out, tries_in_window)."""
     fails = _prune_fails(rec.get("fails", []))
     fails.append(_now())
     rec["fails"] = fails
     if len(fails) >= MAX_TRIES and rec.get("state") == "locked":
-        lockout_reencrypt(rec)
+        lockout_reencrypt(rec, progress=progress, cancel=cancel)
         return True, len(fails)
     write_record(rec)
     return False, len(fails)
@@ -364,7 +370,7 @@ def make_lockout_password():
     return "".join(picks)
 
 
-def lockout_reencrypt(rec):
+def lockout_reencrypt(rec, progress=None, cancel=None):
     """Re-encrypt the locked file with a throwaway 128-char password whose
     hash nobody keeps, then store its salt/check so no password ever verifies
     again. The data is unrecoverable after this by design."""
@@ -377,7 +383,7 @@ def lockout_reencrypt(rec):
     tmp = locked + ".relock"
     try:
         # The current locked file is opaque data; re-lock it as a file.
-        engine.encrypt_file(key, locked, tmp, opts)
+        engine.encrypt_file(key, locked, tmp, opts, progress=progress, cancel=cancel)
         os.replace(tmp, locked)
     finally:
         if os.path.exists(tmp):
@@ -404,11 +410,11 @@ def is_selfdestruct(rec, password):
     return ok
 
 
-def self_destruct(rec):
+def self_destruct(rec, progress=None, cancel=None):
     """Throwaway re-encrypt, then securely wipe and delete ONLY the .f.cys26
     file. No other files are touched. The record is kept and marked
     'destroyed' (it holds no key or password)."""
-    lockout_reencrypt(rec)          # discard-key re-encrypt first
+    lockout_reencrypt(rec, progress=progress, cancel=cancel)   # discard-key re-encrypt
     _secure_wipe(rec["locked_path"])
     rec["state"] = "destroyed"
     rec["fails"] = []
@@ -453,6 +459,52 @@ def recovery_key(rec, password):
     if not ok:
         raise PermissionError("Wrong password.")
     return key.hex().upper()
+
+
+# --------------------------------------------------------------------------
+# Recovery scan (heals state left behind by an interrupted operation)
+# --------------------------------------------------------------------------
+def scan_recovery():
+    """Look for state left behind by a crash or force-quit and heal what is safe.
+
+    - Promote a leftover atomic-write temp (`.rec-*.tmp`) into a real record
+      when it holds a valid salt and its .f.cys26 exists but has no record yet.
+      (This recovers locks stranded by the pre-fix version, where the record
+      was written after the original was deleted.) Otherwise the temp is
+      removed.
+    - Report "half-finished" locks where both the original path and its
+      .f.cys26 still exist, so the GUI can offer to finish or roll them back.
+
+    Returns {"promoted": [ids], "removed_tmp": n, "half_finished": [recs]}.
+    """
+    base = state_dir()
+    existing = {os.path.abspath(r.get("locked_path", "")): r for r in list_records()}
+    promoted, removed_tmp = [], 0
+    for name in os.listdir(base):
+        if not name.startswith(".rec-") or not name.endswith(".tmp"):
+            continue
+        tmp = os.path.join(base, name)
+        rec = None
+        try:
+            with open(tmp) as fh:
+                rec = json.load(fh)
+        except (OSError, ValueError):
+            rec = None
+        locked = os.path.abspath(rec.get("locked_path", "")) if rec else ""
+        if (rec and rec.get("salt") and rec.get("id") and locked
+                and os.path.exists(locked) and locked not in existing):
+            write_record(rec)                 # promote to <id>.json
+            existing[locked] = rec
+            promoted.append(rec["id"])
+        else:
+            removed_tmp += 1
+        _remove(tmp)
+    half_finished = [r for r in list_records()
+                     if r.get("state") == "locked"
+                     and os.path.exists(r.get("path", ""))
+                     and os.path.exists(r.get("locked_path", ""))]
+    return {"promoted": promoted, "removed_tmp": removed_tmp,
+            "half_finished": half_finished}
 
 
 # --------------------------------------------------------------------------
@@ -521,6 +573,68 @@ def run_gui(target=None):
     def ask_password(prompt):
         return simpledialog.askstring("CYS-ENC26-FOLD", prompt, show="•", parent=root)
 
+    def run_bg(title, work, done):
+        """Run work(progress, cancel) on a background thread with a modal
+        progress dialog and a Cancel button, so the window never freezes. When
+        it finishes, call done(result, exc, cancelled) on the main thread."""
+        dlg = tk.Toplevel(root)
+        dlg.title("CYS-ENC26-FOLD")
+        dlg.configure(bg=BG)
+        dlg.transient(root)
+        dlg.resizable(False, False)
+        tk.Label(dlg, text=title, bg=BG, fg=INK,
+                 font=("TkDefaultFont", 11, "bold")).pack(padx=28, pady=(20, 6))
+        status = tk.Label(dlg, text="Working…", bg=BG, fg=MUTED)
+        status.pack(padx=28)
+        pb = ttk.Progressbar(dlg, mode="indeterminate", length=340)
+        pb.pack(padx=28, pady=12)
+        pb.start(12)
+        cancel_event = threading.Event()
+
+        def on_cancel():
+            cancel_event.set()
+            status.config(text="Cancelling…")
+        ttk.Button(dlg, text="Cancel", command=on_cancel).pack(pady=(0, 18))
+        dlg.protocol("WM_DELETE_WINDOW", on_cancel)
+        dlg.grab_set()
+
+        st = {"parts": None}
+
+        def progress(done_n, parts):
+            def upd():
+                if st["parts"] is None:
+                    st["parts"] = parts
+                    pb.stop()
+                    pb.config(mode="determinate", maximum=max(1, parts))
+                pb["value"] = done_n
+                status.config(text=f"{done_n} of {parts} part(s)")
+            root.after(0, upd)
+
+        holder = {}
+
+        def worker():
+            try:
+                holder["result"] = work(progress, cancel_event)
+            except engine.Cancelled:
+                holder["cancelled"] = True
+            except BaseException as exc:            # noqa: BLE001
+                holder["exc"] = exc
+            holder["finished"] = True
+
+        threading.Thread(target=worker, daemon=True).start()
+
+        def poll():
+            if not holder.get("finished"):
+                root.after(100, poll)
+                return
+            try:
+                dlg.grab_release()
+            except tk.TclError:
+                pass
+            dlg.destroy()
+            done(holder.get("result"), holder.get("exc"), holder.get("cancelled", False))
+        root.after(100, poll)
+
     def do_add():
         folder = filedialog.askdirectory(title="Folder to lock")
         path = folder
@@ -541,50 +655,79 @@ def run_gui(target=None):
             messagebox.showerror("CYS-ENC26-FOLD",
                                  "The self-destruct code must differ from the password.")
             return
-        try:
-            size = _tree_size(path)
-            over = size > engine.MAX_FILE_BYTES
-            if over and not messagebox.askyesno(
-                    "CYS-ENC26-FOLD", engine.LIMIT_WARNING):
-                return
-            lock_folder(path, pw, selfdestruct=sd, allow_over_limit=over)
-            messagebox.showinfo("CYS-ENC26-FOLD", "Locked. The original is now encrypted.")
-        except Exception as exc:                       # noqa: BLE001
-            messagebox.showerror("CYS-ENC26-FOLD", f"Couldn't lock it:\n{exc}")
-        refresh()
+        size = _tree_size(path)
+        over = size > engine.MAX_FILE_BYTES
+        if over and not messagebox.askyesno("CYS-ENC26-FOLD", engine.LIMIT_WARNING):
+            return
+
+        def work(progress, cancel):
+            return lock_folder(path, pw, selfdestruct=sd, allow_over_limit=over,
+                               progress=progress, cancel=cancel)
+
+        def done(result, exc, cancelled):
+            if cancelled:
+                messagebox.showinfo("CYS-ENC26-FOLD",
+                                    "Cancelled. Nothing was locked; your files are untouched.")
+            elif exc:
+                messagebox.showerror("CYS-ENC26-FOLD", f"Couldn't lock it:\n{exc}")
+            else:
+                messagebox.showinfo("CYS-ENC26-FOLD", "Locked. The original is now encrypted.")
+            refresh()
+        run_bg(f"Locking {os.path.basename(path.rstrip('/'))}…", work, done)
 
     def _attempt_unlock(rec):
         pw = ask_password(f"Password for {os.path.basename(rec['path'])}:")
         if pw is None:
             return
         if is_selfdestruct(rec, pw):
-            if messagebox.askyesno(
+            if not messagebox.askyesno(
                     "CYS-ENC26-FOLD",
                     "That is the self-destruct code. The folder will be made "
                     "unrecoverable and its locked file deleted. Continue?"):
-                self_destruct(rec)
-                messagebox.showinfo("CYS-ENC26-FOLD", "Self-destructed. The data is gone.")
-            refresh()
+                return
+
+            def sd_work(progress, cancel):
+                return self_destruct(rec, progress=progress, cancel=cancel)
+
+            def sd_done(result, exc, cancelled):
+                if exc and not cancelled:
+                    messagebox.showerror("CYS-ENC26-FOLD", f"Self-destruct failed:\n{exc}")
+                else:
+                    messagebox.showinfo("CYS-ENC26-FOLD", "Self-destructed. The data is gone.")
+                refresh()
+            run_bg("Self-destructing…", sd_work, sd_done)
             return
-        try:
-            restored = unlock_folder(rec, pw)
-            messagebox.showinfo("CYS-ENC26-FOLD", f"Unlocked to:\n{restored}")
-        except PermissionError:
-            locked_out, tries = register_wrong_try(rec)
-            if locked_out:
-                messagebox.showerror(
-                    "CYS-ENC26-FOLD",
-                    f"Wrong password {MAX_TRIES} times in {WINDOW_HOURS} hours. "
-                    "The folder was re-encrypted with a discarded key and is now "
-                    "unrecoverable.")
+
+        def work(progress, cancel):
+            try:
+                restored = unlock_folder(rec, pw, progress=progress, cancel=cancel)
+                return ("ok", restored)
+            except PermissionError:
+                locked_out, tries = register_wrong_try(rec, progress=progress, cancel=cancel)
+                return ("bad", (locked_out, tries))
+
+        def done(result, exc, cancelled):
+            if cancelled:
+                messagebox.showinfo("CYS-ENC26-FOLD", "Cancelled.")
+            elif exc:
+                messagebox.showerror("CYS-ENC26-FOLD", f"Couldn't unlock it:\n{exc}")
+            elif result[0] == "ok":
+                messagebox.showinfo("CYS-ENC26-FOLD", f"Unlocked to:\n{result[1]}")
             else:
-                messagebox.showerror(
-                    "CYS-ENC26-FOLD",
-                    f"Wrong password. {MAX_TRIES - tries} tries left before the "
-                    f"folder is made unrecoverable.")
-        except Exception as exc:                       # noqa: BLE001
-            messagebox.showerror("CYS-ENC26-FOLD", f"Couldn't unlock it:\n{exc}")
-        refresh()
+                locked_out, tries = result[1]
+                if locked_out:
+                    messagebox.showerror(
+                        "CYS-ENC26-FOLD",
+                        f"Wrong password {MAX_TRIES} times in {WINDOW_HOURS} hours. "
+                        "The folder was re-encrypted with a discarded key and is now "
+                        "unrecoverable.")
+                else:
+                    messagebox.showerror(
+                        "CYS-ENC26-FOLD",
+                        f"Wrong password. {MAX_TRIES - tries} tries left before the "
+                        f"folder is made unrecoverable.")
+            refresh()
+        run_bg(f"Unlocking {os.path.basename(rec['path'])}…", work, done)
 
     def do_unlock():
         rec = selected_rec()
@@ -628,6 +771,25 @@ def run_gui(target=None):
         ttk.Button(bar, text=text, command=cmd).pack(side="left", padx=(0, 8))
 
     refresh()
+
+    # Heal anything an interrupted operation left behind, and tell the user.
+    try:
+        healed = scan_recovery()
+    except OSError:
+        healed = {"promoted": [], "removed_tmp": 0, "half_finished": []}
+    if healed["promoted"] or healed["half_finished"]:
+        refresh()
+        lines = []
+        if healed["promoted"]:
+            lines.append(f"Recovered {len(healed['promoted'])} lock record(s) left "
+                         "unsaved by an interrupted lock. You can unlock them normally.")
+        for r in healed["half_finished"]:
+            lines.append(
+                f"'{os.path.basename(r['path'])}' has both the original and a "
+                f"half-written {FOLD_EXT} file. Your original is intact; the "
+                f"partial locked file at {r['locked_path']} can be deleted, or "
+                "remove the lock and try again.")
+        root.after(200, lambda: messagebox.showinfo("CYS-ENC26-FOLD", "\n\n".join(lines)))
 
     # Launched on a .f.cys26 file: "THIS FILE IS LOCKED", then straight to prompt.
     if target and os.path.abspath(target).endswith(FOLD_EXT):

@@ -208,6 +208,58 @@ class FoldTest(unittest.TestCase):
         fold.unlock_folder(rec, "pw")
         self.assertTrue(os.path.exists(d))
 
+    # ---- record ordering / recovery ----
+    def test_record_written_before_original_deleted(self):
+        # If the record write fails, the original must NOT have been deleted,
+        # so a .f.cys26 whose salt was never saved can never be stranded.
+        d = self._make_folder()
+        orig = fold.write_record
+
+        def boom(rec):
+            raise RuntimeError("disk full")
+        fold.write_record = boom
+        try:
+            with self.assertRaises(RuntimeError):
+                fold.lock_folder(d, "pw")
+        finally:
+            fold.write_record = orig
+        self.assertTrue(os.path.exists(d))          # original still intact
+
+    def test_scan_promotes_leftover_tmp(self):
+        # Simulate a lock stranded by the pre-fix version: the .f.cys26 exists
+        # but the record only survived as a .rec-*.tmp.
+        d = self._make_folder()
+        rec = fold.lock_folder(d, "pw")
+        # Move the real record aside into a temp, as an interrupted write would.
+        rec_json = fold._record_path(rec["id"])
+        with open(rec_json) as fh:
+            content = fh.read()
+        os.remove(rec_json)
+        with open(os.path.join(self.state, ".rec-abc.tmp"), "w") as fh:
+            fh.write(content)
+        self.assertEqual(fold.list_records(), [])   # nothing visible yet
+        healed = fold.scan_recovery()
+        self.assertIn(rec["id"], healed["promoted"])
+        # Now it is a normal record again and unlocks.
+        rec2 = fold.read_record(rec["id"])
+        fold.unlock_folder(rec2, "pw")
+        self.assertTrue(os.path.exists(d))
+
+    def test_scan_removes_useless_tmp(self):
+        with open(os.path.join(self.state, ".rec-junk.tmp"), "w") as fh:
+            fh.write("not json")
+        healed = fold.scan_recovery()
+        self.assertEqual(healed["removed_tmp"], 1)
+        self.assertFalse(os.path.exists(os.path.join(self.state, ".rec-junk.tmp")))
+
+    def test_scan_flags_half_finished(self):
+        d = self._make_folder()
+        rec = fold.lock_folder(d, "pw")
+        os.makedirs(rec["path"])                     # original reappears next to .f.cys26
+        healed = fold.scan_recovery()
+        ids = [r["id"] for r in healed["half_finished"]]
+        self.assertIn(rec["id"], ids)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -147,6 +147,17 @@ MIME TYPE application/x-cys-enc26-folder, HANDLED BY cys-enc26-fold.desktop
 SHOWS "THIS FILE IS LOCKED", THEN THE UNLOCK PASSWORD PROMPT
 ```
 
+GUI threading (2.1.1.0): lock, unlock and self-destruct run on a background
+thread via `run_bg`, with a modal progress bar (driven by the engine's
+`progress(done, parts)` callback through `root.after`) and a Cancel button (a
+`threading.Event` passed as the engine's `cancel`). The Tk main thread never
+blocks on encryption, so the window stays closable. `lock_folder` writes the
+record (with the salt) BEFORE deleting the original, so an interruption can
+never strand a `.f.cys26` whose salt was never saved. `scan_recovery()` runs at
+startup: it promotes a leftover `.rec-*.tmp` back into a real record when its
+`.f.cys26` exists, removes useless temps, and flags "half-finished" locks where
+both the original and its `.f.cys26` still exist.
+
 Records: one JSON per lock in `~/.local/state/cys-enc26/fold/<id>.json` (dir
 700, files 600), written atomically. Not in `~/.local/share/cys-enc26` or
 `~/.cache/cys-enc26` because install and uninstall wipe those. `CYS_FOLD_STATE`
