@@ -17,6 +17,8 @@ CYS-ENC26 $VERSION
 Usage:
   cys26 enc        Open the encryption window
   cys26 dec        Open the decryption window
+  cys26 fold       Open CYS-ENC26-FOLD (password-lock a folder or file)
+  cys26 fold PATH  Open FOLD on a folder, file, or a locked .f.cys26 file
   cys26 update     Check GitHub for a newer version and install it
   cys26 version    Show the installed version
   cys26 uninstall  Remove CYS-ENC26
@@ -38,6 +40,25 @@ launch() {
         wait "$pid"
         echo "CYS-ENC26 couldn't open its window:" >&2
         cat "$LOG_DIR/last-run.log" >&2
+        exit 1
+    fi
+}
+
+launch_fold() {  # $1: optional path (folder, file, or .f.cys26)
+    if ! python3 -c "import tkinter" >/dev/null 2>&1; then
+        echo "CYS-ENC26 needs python3-tkinter. Install it with:" >&2
+        echo "  sudo dnf install python3-tkinter" >&2
+        exit 1
+    fi
+    mkdir -p "$LOG_DIR"
+    setsid python3 "$APP_DIR/src/cys_fold.py" ${1:+"$1"} \
+        >"$LOG_DIR/last-run-fold.log" 2>&1 </dev/null &
+    local pid=$!
+    sleep 1
+    if ! kill -0 "$pid" 2>/dev/null; then
+        wait "$pid"
+        echo "CYS-ENC26-FOLD couldn't open its window:" >&2
+        cat "$LOG_DIR/last-run-fold.log" >&2
         exit 1
     fi
 }
@@ -87,6 +108,7 @@ update() {
 case "${1:-}" in
     enc|encrypt)          launch encrypt ;;
     dec|decrypt)          launch decrypt ;;
+    fold)                 launch_fold "${2:-}" ;;
     update)               update ;;
     version|-v|--version) echo "CYS-ENC26 $VERSION" ;;
     uninstall)            exec bash "$APP_DIR/uninstall.sh" ;;

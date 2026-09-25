@@ -31,6 +31,7 @@ command to `~/.local/bin`, adds an app menu entry, and installs
 |---|---|
 | `cys26 enc` | Opens the encryption window |
 | `cys26 dec` | Opens the decryption window |
+| `cys26 fold` | Opens CYS-ENC26-FOLD to password-lock a folder or file |
 | `cys26 update` | Checks GitHub for a newer version and installs it |
 | `cys26 version` | Shows the installed version |
 | `cys26 uninstall` | Removes CYS-ENC26 (keys and locked files are kept) |
@@ -84,6 +85,40 @@ view shows part 1, since every part goes through the same phases.
 
 Files are split into 512 KB parts, and each part is converted to base32 text
 before Phase 0 so every byte survives.
+
+## CYS-ENC26-FOLD (password-locked folders)
+
+`cys26 fold` opens a second window that password-locks a folder or file. The
+moment you set a password, the item is packed into one archive, encrypted with
+the phases above, and left as a single `.f.cys26` file where it was, so a file
+browser or the shell shows no contents until you unlock it. The right password
+restores it byte for byte.
+
+- **The key comes from the password.** PBKDF2-HMAC-SHA256 (600,000 rounds, a
+  random salt per lock) hashes it; the ASCII (hex) form of that hash is the
+  secret, and its first 32 characters are the 128-bit CYS key. *Show recovery
+  key* reveals that key, which also opens the `.f.cys26` in `cys26 dec` (a
+  folder comes back as a `.tar`).
+- **Wrong passwords.** Five wrong tries within 12 hours re-encrypt the item
+  with a discarded 128-character random key. Nobody keeps that key, so the
+  item is then **unrecoverable by design** — an accidental lockout is
+  permanent.
+- **Self-destruct code.** An optional second password that re-encrypts with a
+  discarded key and then securely wipes and deletes only the `.f.cys26` file.
+  Nothing else is touched.
+- **Opening a locked file.** Double-clicking a `.f.cys26` shows *THIS FILE IS
+  LOCKED* and prompts for the password.
+
+**Honest limits.** This is a learning tool. It does not intercept `cd` or a
+file manager to prompt on access; you lock and unlock from the FOLD window, and
+while locked the folder is a single encrypted file. The 5-try counter is a
+JSON file in `~/.local/state/cys-enc26/fold` that your account can read or
+edit, so the real protection is the password strength and PBKDF2, not the
+counter. "Securely wipe" and self-destruct are best effort: on an SSD the old
+blocks can survive wear-levelling, and trash, filesystem journals, thumbnails
+and backups may hold copies FOLD never sees, so it can't promise "no trace."
+Truly running a `.f.cys26` from a shell can't be intercepted; the locked
+message covers double-click / Open only.
 
 ## Tests
 

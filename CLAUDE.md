@@ -6,7 +6,8 @@ every phase when encrypting and decrypting. It is not meant to protect real
 secrets (AES-256-GCM or ChaCha20-Poly1305 are the right tools for that).
 
 Current version: see `VERSION` (1.0.0.0 at handoff, tagged `v1.0.0.0`; 2.0.0.0 adds
-Phases 8.5 and 10, Phase 9 block sizes and multi-part files).
+Phases 8.5 and 10, Phase 9 block sizes and multi-part files; 2.1.0.0 adds
+CYS-ENC26-FOLD, the password-locked-folder window).
 
 ## How the spec is written
 
@@ -107,6 +108,57 @@ TEXT OUTPUT
 PHASE 10 BINARY IF USED, OTHERWISE BASE64
 ```
 
+## CYS-ENC26-FOLD (2.1.0.0, src/cys_fold.py)
+
+A second Tkinter window (`cys26 fold`) that password-locks a folder or file. It
+reuses the engine (`encrypt_file`, `decrypt_file`, `parse_key`, `Options`); no
+phase changes. `src/cys_fold.py` is both the engine (importable functions) and
+the GUI (`run_gui`).
+
+```
+PHASE F1: PASSWORD HASH
+PASSWORD AS UTF-8, RANDOM 16-BYTE SALT PER LOCK
+PBKDF2-HMAC-SHA256, 600000 ROUNDS -> 32-BYTE HASH
+
+PHASE F2: ASCII HASH TO KEY
+HASH AS UPPERCASE HEX (64 ASCII CHARS)
+CYS KEY = FIRST 32 CHARS (128 BIT), SO IT ALSO OPENS IN cys26 dec
+
+PHASE F3: LOCK
+FOLDER PACKED INTO ONE UNCOMPRESSED TAR (dereference=False)
+TAR (OR THE FILE) RUN THROUGH encrypt_file -> <PATH>.f.cys26
+ORIGINAL REMOVED ONLY AFTER THE .f.cys26 IS FULLY WRITTEN
+UNLOCK: decrypt_file -> TAR EXTRACTED WITH filter="data" -> RESTORED IN PLACE
+
+WRONG-TRY COUNTER
+fails = LIST OF ISO TIMESTAMPS, PRUNED TO A ROLLING 12-HOUR WINDOW
+5 WRONG TRIES IN THE WINDOW -> LOCKOUT RE-ENCRYPT
+
+LOCKOUT / SELF-DESTRUCT (DISCARDED KEY)
+RANDOM 128-CHAR PASSWORD (>=14 UPPER, 10 LOWER, 8 DIGIT, 4 SYMBOL)
+HASHED -> KEY, RE-ENCRYPT THE .f.cys26, STORE ONLY THE NEW salt/check
+PASSWORD AND KEY NEVER STORED -> UNRECOVERABLE
+SELF-DESTRUCT: SECOND PASSWORD -> LOCKOUT RE-ENCRYPT, THEN OVERWRITE THE
+  .f.cys26 ONCE WITH RANDOM BYTES AND DELETE IT (ONLY THAT FILE), RECORD
+  MARKED state "destroyed"
+
+OPENING A .f.cys26
+MIME TYPE application/x-cys-enc26-folder, HANDLED BY cys-enc26-fold.desktop
+SHOWS "THIS FILE IS LOCKED", THEN THE UNLOCK PASSWORD PROMPT
+```
+
+Records: one JSON per lock in `~/.local/state/cys-enc26/fold/<id>.json` (dir
+700, files 600), written atomically. Not in `~/.local/share/cys-enc26` or
+`~/.cache/cys-enc26` because install and uninstall wipe those. `CYS_FOLD_STATE`
+overrides the location (tests use it). `check = SHA-256(label + hash)`; the
+password is never stored. Self-destruct uses its own salt/check and label.
+
+Honest limits (documented in the README): no `cd`/file-manager auto-prompt (a
+plain app can't hook filesystem access); the counter is an editable JSON file
+so the real protection is PBKDF2 + password strength; secure-wipe is best
+effort (SSD wear-levelling, trash, journals, backups); shell execution of a
+`.f.cys26` can't be intercepted.
+
 ## File format (version 2)
 
 ```
@@ -153,10 +205,12 @@ cys26.conf            REPO="YOUR-GITHUB-USERNAME/cys-enc26", BRANCH="main"
 install.sh            user install to ~/.local/share/cys-enc26, links ~/.local/bin/cys26,
                       app menu entry, installs python3-tkinter if missing
 uninstall.sh
-bin/cys26             CLI: enc, dec, update, version, uninstall
+bin/cys26             CLI: enc, dec, fold, update, version, uninstall
 src/cys_enc26.py      engine + Tkinter GUI (--mode encrypt|decrypt)
-tests/                unittest round trips, version 1 fixtures
+src/cys_fold.py       CYS-ENC26-FOLD engine + Tkinter GUI (cys26 fold [path])
+tests/                unittest round trips, version 1 fixtures, FOLD tests
 assets/cys-enc26.svg
+assets/cys-enc26-fold.svg  FOLD app + .f.cys26 file-type icon
 tools/set-repo.sh     sets GitHub username everywhere + git remote
 tools/bump-version.sh major|minor|patch|build "note": bumps VERSION,
                       updates CHANGELOG, commits, tags vX.X.X.X
@@ -205,7 +259,12 @@ file round trips plus a full GUI flow; installer, `cys26 version`,
 `cys26 update` (against a simulated GitHub server) and `cys26 dec` window
 launch. For 2.0.0.0: the unittest suite, plus a headless GUI run (Xvfb)
 covering messages, multi-part files, Phase 10, compact save, block size and
-bypass warnings, cancel and version 1 files.
+bypass warnings, cancel and version 1 files. For 2.1.0.0: the unittest suite
+(15 FOLD tests: derivation vector, check/verify, record round trip, folder /
+empty-folder / single-file / symlink round trips, wrong-password, restore
+conflict, window pruning, 5-try lockout, lockout password classes,
+self-destruct wiping only the .f.cys26, recovery key), plus a headless (Xvfb)
+launch of the FOLD window and of opening a locked .f.cys26.
 
 ## Working in the Claude project copy
 

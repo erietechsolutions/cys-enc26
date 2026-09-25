@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.1.0.0 (2026-09-25)
+
+- New CYS-ENC26-FOLD window (`cys26 fold`): password-lock a folder or file.
+  The moment a password is set the item is packed and encrypted to a single
+  `.f.cys26` file, so a file browser or the shell shows no contents until it
+  is unlocked. Restored byte for byte with the right password.
+- The secret key is derived from the password: PBKDF2-HMAC-SHA256 (600,000
+  rounds, per-lock salt), then the ASCII (hex) form of the hash; the first 32
+  characters are the 128-bit CYS key, so a lock also opens in `cys26 dec`.
+- Five wrong passwords within 12 hours re-encrypt the item with a discarded
+  128-character random key, making it unrecoverable by design.
+- Optional self-destruct code: a second password that re-encrypts with a
+  discarded key and then securely wipes and deletes only the `.f.cys26` file.
+- Opening a `.f.cys26` file shows "THIS FILE IS LOCKED" and prompts to unlock
+  (a registered file type / MIME handler); custom file icon.
+- Lock records live in `~/.local/state/cys-enc26/fold`, left alone by install,
+  update and uninstall.
+
 ## 2.0.0.0 (2026-09-24)
 
 - New Phase 8.5: the Phase 8 output is compressed with LZMA2, so locked files
