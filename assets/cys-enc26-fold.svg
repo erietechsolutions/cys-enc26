@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="folder" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a8ba0"/>
+      <stop offset="1" stop-color="#155564"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="24" fill="#E7EBEF"/>
+  <!-- folder -->
+  <path d="M22 40 h30 l8 10 h46 a6 6 0 0 1 6 6 v42 a6 6 0 0 1 -6 6 H22 a6 6 0 0 1 -6 -6 V46 a6 6 0 0 1 6 -6 z"
+        fill="url(#folder)"/>
+  <!-- padlock -->
+  <g transform="translate(64 66)">
+    <path d="M-13 -4 v-8 a13 13 0 0 1 26 0 v8" fill="none" stroke="#F7F9FA" stroke-width="6"/>
+    <rect x="-20" y="-4" width="40" height="32" rx="6" fill="#F7F9FA"/>
+    <circle cx="0" cy="9" r="5" fill="#155564"/>
+    <rect x="-2.5" y="9" width="5" height="11" rx="2.5" fill="#155564"/>
+  </g>
+</svg>

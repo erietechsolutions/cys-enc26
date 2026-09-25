@@ -69,9 +69,11 @@ chmod +x "$NEW/bin/cys26" "$NEW/src/cys_enc26.py" "$NEW/uninstall.sh"
 rm -rf "$APP_DIR"
 mv "$NEW" "$APP_DIR"
 
-mkdir -p "$BIN_DIR" "$APPS_DIR" "$ICON_DIR"
+MIME_DIR="$HOME/.local/share/mime"
+mkdir -p "$BIN_DIR" "$APPS_DIR" "$ICON_DIR" "$MIME_DIR/packages"
 ln -sf "$APP_DIR/bin/cys26" "$BIN_DIR/cys26"
 cp "$APP_DIR/assets/cys-enc26.svg" "$ICON_DIR/cys-enc26.svg"
+cp "$APP_DIR/assets/cys-enc26-fold.svg" "$ICON_DIR/cys-enc26-fold.svg"
 
 cat > "$APPS_DIR/cys-enc26.desktop" <<DESKTOP
 [Desktop Entry]
@@ -83,7 +85,7 @@ Icon=cys-enc26
 Terminal=false
 Categories=Utility;Security;
 StartupWMClass=Cys-enc26
-Actions=encrypt;decrypt;
+Actions=encrypt;decrypt;fold;
 
 [Desktop Action encrypt]
 Name=Encrypt
@@ -92,7 +94,42 @@ Exec=$BIN_DIR/cys26 enc
 [Desktop Action decrypt]
 Name=Decrypt
 Exec=$BIN_DIR/cys26 dec
+
+[Desktop Action fold]
+Name=Lock with FOLD
+Exec=$BIN_DIR/cys26 fold
 DESKTOP
+
+# CYS-ENC26-FOLD: its own launcher, and the handler for locked .f.cys26 files.
+cat > "$APPS_DIR/cys-enc26-fold.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=CYS-ENC26-FOLD
+Comment=Password-lock a folder or file
+Exec=$BIN_DIR/cys26 fold %f
+Icon=cys-enc26-fold
+Terminal=false
+Categories=Utility;Security;
+StartupWMClass=Cys-fold
+MimeType=application/x-cys-enc26-folder;
+DESKTOP
+
+# Register the .f.cys26 file type so opening one launches FOLD.
+cat > "$MIME_DIR/packages/cys-enc26-fold.xml" <<'MIME'
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-cys-enc26-folder">
+    <comment>CYS-ENC26-FOLD locked folder</comment>
+    <glob pattern="*.f.cys26"/>
+    <icon name="cys-enc26-fold"/>
+  </mime-type>
+</mime-info>
+MIME
+update-mime-database "$MIME_DIR" >/dev/null 2>&1 || true
+xdg-mime default cys-enc26-fold.desktop application/x-cys-enc26-folder >/dev/null 2>&1 || true
+# Icon for the file type itself (MimeType icons use the type name with '-').
+cp "$APP_DIR/assets/cys-enc26-fold.svg" \
+   "$ICON_DIR/application-x-cys-enc26-folder.svg" 2>/dev/null || true
 update-desktop-database "$APPS_DIR" >/dev/null 2>&1 || true
 gtk-update-icon-cache -q "$HOME/.local/share/icons/hicolor" >/dev/null 2>&1 || true
 
@@ -105,7 +142,7 @@ fi
 
 say "CYS-ENC26 $(cat "$APP_DIR/VERSION") is installed."
 case ":$PATH:" in
-    *":$BIN_DIR:"*) say "Run 'cys26 enc' or 'cys26 dec' to open it." ;;
+    *":$BIN_DIR:"*) say "Run 'cys26 enc', 'cys26 dec' or 'cys26 fold' to open it." ;;
     *) say "Add ~/.local/bin to your PATH to use the cys26 command:"
        say "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc && source ~/.bashrc" ;;
 esac
