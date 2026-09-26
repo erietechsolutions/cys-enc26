@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.1.1.0 (2026-09-25)
+
+- Fixed: the CYS-ENC26-FOLD window froze and could not be closed during a lock
+  or unlock. The encryption now runs on a background thread with a progress bar
+  and a Cancel button, so the window stays responsive (matching the main app).
+- Fixed: a lock could be stranded unrecoverable if the app was interrupted
+  mid-lock. The lock record (which holds the per-lock salt) is now written
+  before the original is removed, so the original is never deleted until the
+  key material is safely saved.
+- New: on startup FOLD heals leftover state from an interrupted lock — it
+  recovers a record that was left only as a temp file, and flags any folder
+  that still has both its original and a half-written .f.cys26.
+
 ## 2.1.0.0 (2026-09-25)
 
 - New CYS-ENC26-FOLD window (`cys26 fold`): password-lock a folder or file.
